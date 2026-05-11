@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>محاكي ديناميكا الهواء: فهم الستول</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
+        body { font-family: 'Cairo', sans-serif; background-color: #f0f4f8; }
+        .canvas-container { position: relative; background: linear-gradient(to bottom, #1e3a8a, #3b82f6); overflow: hidden; border-radius: 1rem; }
+        #airflowCanvas { cursor: crosshair; }
+        .gauge-container { transition: all 0.3s ease; }
+        .stall-warning { animation: blink 0.5s infinite; }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-6xl mx-auto">
+        <!-- Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-800">محاكي الانهيار الجناحي (Aerodynamic Stall)</h1>
+            <p class="text-gray-600 mt-2">تحكم في زاوية الجناح لاكتشاف كيف يتولد الرفع ومتى يحدث الانهيار.</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            <!-- Controls & Stats Area -->
+            <div class="lg:col-span-1 space-y-6">
+                <!-- Control Panel -->
+                <div class="bg-white p-6 rounded-2xl shadow-lg">
+                    <h2 class="text-xl font-bold mb-4 border-b pb-2">لوحة التحكم</h2>
+                    
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">زاوية الهجوم (AoA): <span id="aoaValue" class="text-blue-600 font-bold">0</span>°</label>
+                            <input type="range" id="aoaSlider" min="-5" max="30" step="0.5" value="0" 
+                                   class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600">
+                            <div class="flex justify-between text-xs text-gray-500 mt-1">
+                                <span>-5°</span>
+                                <span>15° (ستول تقريباً)</span>
+                                <span>30°</span>
+                            </div>
+                        </div>
+
+                        <div class="pt-4 space-y-3">
+                            <div class="flex justify-between items-center">
+                                <span class="text-sm">معامل الرفع (C<sub>L</sub>):</span>
+                                <span id="liftLabel" class="font-mono font-bold">0.00</span>
+                            </div>
+                            <div class="w-full bg-gray-100 h-3 rounded-full overflow-hidden">
+                                <div id="liftBar" class="bg-green-500 h-full transition-all duration-200" style="width: 0%"></div>
+                            </div>
+
+                            <div class="flex justify-between items-center">
+                                <span class="text-sm">معامل السحب (C<sub>D</sub>):</span>
+                                <span id="dragLabel" class="font-mono font-bold">0.00</span>
+                            </div>
+                            <div class="w-full bg-gray-100 h-3 rounded-full overflow-hidden">
+                                <div id="dragBar" class="bg-red-500 h-full transition-all duration-200" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stall Status -->
+                <div id="statusCard" class="bg-white p-6 rounded-2xl shadow-lg border-l-8 border-green-500">
+                    <h3 class="text-lg font-bold mb-1">حالة التدفق</h3>
+                    <p id="statusText" class="text-gray-600">تدفق صفيحي مستقر (Laminar Flow). الجناح يولد رفعاً كافياً.</p>
+                </div>
+
+                <!-- Explanation Box -->
+                <div class="bg-blue-50 p-4 rounded-2xl border border-blue-100 text-sm leading-relaxed text-blue-800">
+                    <strong>ماذا تلاحظ؟</strong><br>
+                    عند زيادة الزاوية، تزداد سرعة الهواء فوق الجناح (ضغط منخفض) مما يزيد الرفع. ولكن عند زاوية معينة، لا يستطيع الهواء الالتصاق بسطح الجناح، فينفصل ويخلق دوامات، مما يسبب فقدان الرفع فجأة (الستول).
+                </div>
+            </div>
+
+            <!-- Simulation Display Area -->
+            <div class="lg:col-span-2">
+                <div class="canvas-container shadow-2xl relative">
+                    <canvas id="airflowCanvas" class="w-full h-[400px] md:h-[500px]"></canvas>
+                    
+                    <!-- Overlays -->
+                    <div class="absolute top-4 left-4 flex flex-col gap-2">
+                        <div class="bg-white/80 backdrop-blur px-3 py-1 rounded text-xs font-bold shadow-sm">الضغط العلوي: <span id="topPres" class="text-blue-600">-</span></div>
+                        <div class="bg-white/80 backdrop-blur px-3 py-1 rounded text-xs font-bold shadow-sm">الضغط السفلي: <span id="botPres" class="text-red-600">-</span></div>
+                    </div>
+
+                    <div id="stallAlert" class="hidden absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div class="bg-red-600 text-white px-8 py-3 rounded-full font-bold text-2xl uppercase tracking-widest shadow-2xl stall-warning border-4 border-white">
+                            STALL / انهيار
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Force Vectors Key -->
+                <div class="mt-4 flex justify-center gap-8 text-sm font-bold">
+                    <div class="flex items-center gap-2"><span class="w-4 h-1 bg-green-400"></span> قوة الرفع (Lift)</div>
+                    <div class="flex items-center gap-2"><span class="w-4 h-1 bg-red-400"></span> قوة السحب (Drag)</div>
+                    <div class="flex items-center gap-2"><span class="w-4 h-1 bg-white"></span> تدفق الهواء</div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('airflowCanvas');
+        const ctx = canvas.getContext('2d');
+        const aoaSlider = document.getElementById('aoaSlider');
+        const aoaValueDisp = document.getElementById('aoaValue');
+        const liftLabel = document.getElementById('liftLabel');
+        const dragLabel = document.getElementById('dragLabel');
+        const liftBar = document.getElementById('liftBar');
+        const dragBar = document.getElementById('dragBar');
+        const statusCard = document.getElementById('statusCard');
+        const statusText = document.getElementById('statusText');
+        const stallAlert = document.getElementById('stallAlert');
+        const topPresDisp = document.getElementById('topPres');
+        const botPresDisp = document.getElementById('botPres');
+
+        let aoa = 0;
+        let particles = [];
+        const numParticles = 80;
+        const criticalAoA = 16;
+
+        function resize() {
+            canvas.width = canvas.parentElement.clientWidth;
+            canvas.height = canvas.parentElement.clientHeight;
+            initParticles();
+        }
+
+        class Particle {
+            constructor() {
+                this.reset();
+            }
+            reset() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+                this.vx = 4 + Math.random() * 2;
+                this.history = [];
+            }
+            update() {
+                // تزييف تدفق الهواء حول الجناح
+                const wingX = canvas.width / 2;
+                const wingY = canvas.height / 2;
+                const dx = this.x - wingX;
+                const dy = this.y - wingY;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                
+                // تأثير الجناح على جزيئات الهواء القريبة
+                if (dist < 150) {
+                    const angleRad = aoa * Math.PI / 180;
+                    const isAbove = dy < Math.sin(angleRad) * dx;
+                    
+                    if (aoa < criticalAoA) {
+                        // تدفق منتظم (Laminar)
+                        if (dx > -100 && dx < 100) {
+                             const targetY = wingY + Math.sin(angleRad) * dx - (isAbove ? 30 : -20);
+                             this.y += (targetY - this.y) * 0.1;
+                        }
+                    } else {
+                        // تدفق منفصل (Turbulent Stall)
+                        if (dx > 0 && isAbove) {
+                            this.x += Math.random() * 2 - 1;
+                            this.y += Math.random() * 8 - 4; // اهتزاز الدوامات
+                        } else if (dx > -100 && dx < 100) {
+                            const targetY = wingY + Math.sin(angleRad) * dx - (isAbove ? 40 : -20);
+                            this.y += (targetY - this.y) * 0.05;
+                        }
+                    }
+                }
+
+                this.x += this.vx;
+                if (this.x > canvas.width) {
+                    this.x = 0;
+                    this.y = Math.random() * canvas.height;
+                }
+            }
+            draw() {
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y);
+                ctx.lineTo(this.x - 15, this.y);
+                ctx.stroke();
+            }
+        }
+
+        function initParticles() {
+            particles = [];
+            for(let i=0; i<numParticles; i++) particles.push(new Particle());
+        }
+
+        function drawWing() {
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const angleRad = aoa * Math.PI / 180;
+
+            ctx.save();
+            ctx.translate(centerX, centerY);
+            ctx.rotate(angleRad);
+
+            // رسم شكل الجناح (Airfoil - NACA style)
+            ctx.beginPath();
+            ctx.moveTo(-100, 0); // الحافة الأمامية
+            ctx.bezierCurveTo(-100, -40, 40, -30, 120, 0); // الجزء العلوي
+            ctx.bezierCurveTo(40, 15, -60, 15, -100, 0); // الجزء السفلي
+            
+            // لون الجناح يتغير مع الضغط
+            const grad = ctx.createLinearGradient(0, -30, 0, 15);
+            grad.addColorStop(0, aoa > criticalAoA ? '#4b5563' : '#cbd5e1');
+            grad.addColorStop(1, '#94a3b8');
+            ctx.fillStyle = grad;
+            ctx.fill();
+            
+            ctx.strokeStyle = '#1e293b';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // رسم متجهات القوى
+            if (Math.abs(aoa) > 0.5) {
+                const liftMag = calculateLift(aoa) * 100;
+                const dragMag = calculateDrag(aoa) * 100;
+
+                // Lift Vector (Green) - دائماً عمودي على التدفق
+                ctx.rotate(-angleRad); // إلغاء التدوير لرسم المتجه للأعلى
+                ctx.beginPath();
+                ctx.strokeStyle = '#4ade80';
+                ctx.lineWidth = 4;
+                ctx.moveTo(0, 0);
+                ctx.lineTo(0, -liftMag);
+                ctx.stroke();
+                // Arrow head
+                ctx.moveTo(-5, -liftMag+10); ctx.lineTo(0, -liftMag); ctx.lineTo(5, -liftMag+10); ctx.stroke();
+
+                // Drag Vector (Red) - مع اتجاه التدفق
+                ctx.beginPath();
+                ctx.strokeStyle = '#f87171';
+                ctx.moveTo(0, 0);
+                ctx.lineTo(dragMag, 0);
+                ctx.stroke();
+                // Arrow head
+                ctx.moveTo(dragMag-10, -5); ctx.lineTo(dragMag, 0); ctx.lineTo(dragMag-10, 5); ctx.stroke();
+            }
+
+            ctx.restore();
+        }
+
+        function calculateLift(a) {
+            // تقريب لمعامل الرفع
+            if (a > criticalAoA) {
+                // منطقة الستول: هبوط حاد
+                return Math.max(0.2, 1.5 * Math.sin(criticalAoA * Math.PI/180) - (a - criticalAoA) * 0.05);
+            }
+            return 2 * Math.PI * (a + 2) * (Math.PI / 180); // علاقة خطية قبل الستول
+        }
+
+        function calculateDrag(a) {
+            // تقريب لمعامل السحب
+            const baseDrag = 0.05;
+            const inducedDrag = Math.pow(calculateLift(a), 2) * 0.1;
+            const stallDrag = a > criticalAoA ? (a - criticalAoA) * 0.08 : 0;
+            return baseDrag + inducedDrag + stallDrag;
+        }
+
+        function updateUI() {
+            const Cl = calculateLift(aoa);
+            const Cd = calculateDrag(aoa);
+            
+            liftLabel.innerText = Cl.toFixed(2);
+            dragLabel.innerText = Cd.toFixed(2);
+            
+            liftBar.style.width = Math.min(100, Cl * 50) + "%";
+            dragBar.style.width = Math.min(100, Cd * 100) + "%";
+
+            // تحديث الضغط الوهمي
+            const pDiff = Cl * 20;
+            topPresDisp.innerText = (1013 - pDiff).toFixed(1) + " hPa";
+            botPresDisp.innerText = (1013 + pDiff/4).toFixed(1) + " hPa";
+
+            if (aoa >= criticalAoA) {
+                statusCard.classList.replace('border-green-500', 'border-red-500');
+                statusText.innerText = "تحذير: انفصال تدفق الهواء! الجناح في حالة انهيار (Stall). السحب يزداد والرفع ينهار.";
+                stallAlert.classList.remove('hidden');
+            } else {
+                statusCard.classList.replace('border-red-500', 'border-green-500');
+                statusText.innerText = aoa < 0 ? "دفع لأسفل: الجناح يولد قوة ضغط سفلي." : "تدفق صفيحي مستقر. الجناح يعمل بكفاءة عالية.";
+                stallAlert.classList.add('hidden');
+            }
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // رسم الجسيمات
+            particles.forEach(p => {
+                p.update();
+                p.draw();
+            });
+
+            drawWing();
+            requestAnimationFrame(animate);
+        }
+
+        aoaSlider.addEventListener('input', (e) => {
+            aoa = parseFloat(e.target.value);
+            aoaValueDisp.innerText = aoa;
+            updateUI();
+        });
+
+        window.addEventListener('resize', resize);
+        
+        // البدء
+        resize();
+        updateUI();
+        animate();
+
+    </script>
+</body>
+</html>
